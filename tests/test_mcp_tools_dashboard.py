@@ -403,3 +403,50 @@ def test_matched_lab_omits_the_labs_present_hint(monkeypatch):
     result = tools_dashboard.list_tests(**_tree_args(lab="lava-collabora"))
     assert result["matched"] == 1
     assert "labs_present" not in result
+
+
+def test_get_test_issues_fetches_dashboard(monkeypatch):
+    get = _mock_get(monkeypatch, [{"id": "issue1"}])
+    result = tools_dashboard.get_test_issues("maestro:t1")
+    assert result == [{"id": "issue1"}]
+    assert "test/maestro:t1/issues" in get.call_args[0][0]
+
+
+def test_get_build_issues_fetches_dashboard(monkeypatch):
+    get = _mock_get(monkeypatch, [{"id": "issue2"}])
+    result = tools_dashboard.get_build_issues("maestro:b1")
+    assert result == [{"id": "issue2"}]
+    assert "build/maestro:b1/issues" in get.call_args[0][0]
+
+
+def test_get_log_returns_client_payload(monkeypatch):
+    from kcidev.api import KernelCIClient
+
+    monkeypatch.setattr(
+        KernelCIClient,
+        "get_log",
+        lambda self, tid, max_bytes=16384, tail=True: {
+            "test_id": tid,
+            "truncated": False,
+            "text": "log body",
+        },
+    )
+    result = tools_dashboard.get_log("maestro:t1")
+    assert result["text"] == "log body"
+    assert result["test_id"] == "maestro:t1"
+
+
+def test_get_test_issues_returns_empty_when_none_are_tracked(monkeypatch):
+    _mock_get(monkeypatch, {"error": "No issues were found for this test"})
+    assert tools_dashboard.get_test_issues("maestro:t1") == []
+
+
+def test_get_build_issues_returns_empty_when_none_are_tracked(monkeypatch):
+    _mock_get(monkeypatch, {"error": "No issues found for this build"})
+    assert tools_dashboard.get_build_issues("maestro:b1") == []
+
+
+def test_get_test_issues_still_reports_other_errors(monkeypatch):
+    _mock_get(monkeypatch, {"error": "Test not found"})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.get_test_issues("maestro:nope")

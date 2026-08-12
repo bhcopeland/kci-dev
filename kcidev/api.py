@@ -8,11 +8,18 @@ module to build and submit KCIDB payloads or query KernelCI dashboard data
 without invoking Click commands or shelling out to ``kci-dev``.
 """
 
+import ipaddress
+import socket
+import zlib
 from datetime import datetime, timezone
+from time import monotonic
+from urllib.parse import urljoin, urlparse
 
 import click
+import requests
 from click.testing import CliRunner
 
+from kcidev.libs.common import kcidev_session
 from kcidev.libs.dashboard import (
     dashboard_api_url,
     dashboard_fetch_boot_issues,
@@ -100,6 +107,101 @@ def _as_library_error(action, func, *args, **kwargs):
         raise KciDevError(action) from exc
     except SystemExit as exc:
         raise KciDevError(action) from exc
+
+
+MAX_LOG_BYTES = 1 << 20
+LOG_SCAN_LIMIT = 64 << 20
+LOG_DEADLINE_SECONDS = 60
+_LOG_CHUNK = 1 << 16
+_MAX_LOG_REDIRECTS = 5
+
+
+def _require_public_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise KciDevError(f"Refusing to fetch non-http(s) log URL: {url}")
+    host = parsed.hostname
+    if not host:
+        raise KciDevError(f"Log URL has no host: {url}")
+    default_port = 443 if parsed.scheme == "https" else 80
+    try:
+        port = parsed.port or default_port
+    except ValueError as exc:
+        raise KciDevError(f"Invalid port in log URL {url}: {exc}") from exc
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError) as exc:
+        raise KciDevError(f"Could not resolve log host {host}: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            raise KciDevError(
+                f"Refusing to fetch log from non-public address {ip} ({host})"
+            )
+
+
+def _stream_public_get(url):
+    for _ in range(_MAX_LOG_REDIRECTS + 1):
+        _require_public_url(url)
+        response = kcidev_session.get(
+            url, stream=True, timeout=30, allow_redirects=False
+        )
+        if 300 <= response.status_code < 400:
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                raise KciDevError(f"Redirect without Location header: {url}")
+            url = urljoin(url, location)
+            continue
+        return response
+    raise KciDevError("Too many redirects while fetching log")
+
+
+def _gunzip_iter(raw_iter):
+    decomp = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    carry = b""
+    trailing_garbage = False
+    for chunk in raw_iter:
+        to_feed = carry + chunk
+        carry = b""
+        while to_feed:
+            if decomp.eof:
+                if to_feed[:2] == b"\x1f\x8b":
+                    decomp = zlib.decompressobj(zlib.MAX_WBITS | 16)
+                elif len(to_feed) < 2:
+                    carry = to_feed
+                    break
+                else:
+                    trailing_garbage = True
+                    break
+            yield decomp.decompress(to_feed, _LOG_CHUNK)
+            to_feed = decomp.unused_data if decomp.eof else decomp.unconsumed_tail
+        if trailing_garbage:
+            break
+    if trailing_garbage:
+        return
+    rest = decomp.flush()
+    if rest:
+        yield rest
+    if not decomp.eof:
+        raise KciDevError("Log gzip stream is incomplete or malformed")
+
+
+def _pick_log_url(test):
+    if not isinstance(test, dict):
+        return None
+    if test.get("log_url"):
+        return test["log_url"]
+    logs = [
+        f
+        for f in (test.get("output_files") or [])
+        if isinstance(f, dict)
+        and f.get("url")
+        and isinstance(f.get("name"), str)
+        and "log" in f["name"].lower()
+    ]
+    logs.sort(key=lambda f: ("stderr" in f["name"].lower(), f["name"].lower()))
+    return logs[0]["url"] if logs else None
 
 
 class KernelCIClient:
@@ -367,6 +469,116 @@ class KernelCIClient:
             "Dashboard test request failed", dashboard_fetch_test, test_id, True
         )
 
+    def get_log(self, test_id, max_bytes=16384, tail=True):
+        """Fetch the raw log for a test, decompressing gzip, size-bounded.
+
+        Resolves the test's log URL (``log_url`` or, when that is empty, a
+        log entry from ``output_files``), downloads it with a bounded head or
+        tail buffer, decompressing gzip (including multi-member streams)
+        incrementally, and returns the text with the decompressed
+        ``total_bytes`` and a ``truncated`` flag. At most ``max_bytes`` bytes
+        are returned (capped at ``MAX_LOG_BYTES``), taken from the end when
+        ``tail`` is true (where failures usually are) or the start otherwise.
+        Reading stops once ``LOG_SCAN_LIMIT`` compressed or decompressed
+        bytes are seen, to bound memory and download against oversized or
+        malicious logs; ``scan_limited`` is then set and ``total_bytes`` is a
+        floor rather than the exact size. Reading also stops after
+        ``LOG_DEADLINE_SECONDS``, since the request timeout is per read
+        rather than total and a slow server would otherwise hold the
+        caller indefinitely; ``deadline_exceeded`` is then set and
+        ``total_bytes`` is likewise a floor. The log URL is validated (scheme
+        and resolved address) before fetching, though a DNS rebind between
+        that check and the request remains a residual gap.
+        """
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
+            raise KciDevError("max_bytes must be a positive integer")
+        if max_bytes <= 0:
+            raise KciDevError("max_bytes must be a positive integer")
+        max_bytes = min(max_bytes, MAX_LOG_BYTES)
+
+        test = self.get_test(test_id)
+        log_url = _pick_log_url(test)
+        if not log_url:
+            raise KciDevError(f"No log available for test {test_id}")
+
+        buf = bytearray()
+        total = 0
+        raw_total = 0
+        scan_limited = False
+        deadline_exceeded = False
+        deadline = monotonic() + LOG_DEADLINE_SECONDS
+        response = None
+        try:
+            response = _stream_public_get(log_url)
+            response.raise_for_status()
+            chunks = response.iter_content(_LOG_CHUNK)
+
+            prefix = b""
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                prefix += chunk
+                if len(prefix) >= 2:
+                    break
+
+            def raw_iter():
+                nonlocal raw_total, scan_limited, deadline_exceeded
+                if prefix:
+                    raw_total += len(prefix)
+                    yield prefix
+                for chunk in chunks:
+                    if not chunk:
+                        continue
+                    if monotonic() > deadline:
+                        deadline_exceeded = True
+                        return
+                    raw_total += len(chunk)
+                    if raw_total > LOG_SCAN_LIMIT:
+                        scan_limited = True
+                        return
+                    yield chunk
+
+            source = (
+                _gunzip_iter(raw_iter()) if prefix[:2] == b"\x1f\x8b" else raw_iter()
+            )
+            try:
+                for out in source:
+                    if not out:
+                        continue
+                    total += len(out)
+                    if tail:
+                        buf += out
+                        if len(buf) > max_bytes:
+                            del buf[:-max_bytes]
+                    elif len(buf) < max_bytes:
+                        buf += out[: max_bytes - len(buf)]
+                    if total >= LOG_SCAN_LIMIT:
+                        scan_limited = True
+                        break
+            except KciDevError:
+                if not (scan_limited or deadline_exceeded):
+                    raise
+        except KciDevError:
+            raise
+        except (requests.exceptions.RequestException, zlib.error, OSError) as exc:
+            raise KciDevError(f"Log download failed for test {test_id}: {exc}") from exc
+        finally:
+            if response is not None:
+                response.close()
+
+        returned = bytes(buf)
+        return {
+            "test_id": test_id,
+            "log_url": log_url,
+            "total_bytes": total,
+            "returned_bytes": len(returned),
+            "truncated": scan_limited or deadline_exceeded or total > len(returned),
+            "scan_limited": scan_limited,
+            "deadline_exceeded": deadline_exceeded,
+            "tail": tail,
+            "text": returned.decode("utf-8", errors="replace"),
+        }
+
     def get_tree_list(self, origin, days=7):
         return self._dashboard_request(
             "Dashboard tree list request failed",
@@ -429,22 +641,32 @@ class KernelCIClient:
             True,
         )
 
+    def _issues_or_empty(self, action, func, item_id):
+        """Fetch issues for one artifact, treating "none tracked" as empty.
+
+        The dashboard reports an artifact with no known issues as an
+        error rather than an empty list, which callers that ask "is this
+        failure already known" should read as a clean answer.
+        """
+        try:
+            return self._dashboard_request(action, func, item_id, True, False)
+        except KciDevError as exc:
+            if "No issues" in str(exc):
+                return []
+            raise
+
     def get_build_issues(self, build_id):
-        return self._dashboard_request(
+        return self._issues_or_empty(
             "Dashboard build issues request failed",
             dashboard_fetch_build_issues,
             build_id,
-            True,
-            True,
         )
 
     def get_boot_issues(self, test_id):
-        return self._dashboard_request(
+        return self._issues_or_empty(
             "Dashboard boot issues request failed",
             dashboard_fetch_boot_issues,
             test_id,
-            True,
-            True,
         )
 
     def get_issue_list(self, origin=None, days=7):
