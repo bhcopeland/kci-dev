@@ -229,3 +229,13 @@ def test_list_nodes_rejects_negative_offset(monkeypatch):
     result = _call_tool(create_server(CFG, "test"), "list_nodes", {"offset": -1})
     assert result.isError is True
     get.assert_not_called()
+
+
+def test_list_nodes_rejects_filter_without_equals(monkeypatch):
+    get = _no_http(monkeypatch)
+    result = _call_tool(
+        create_server(CFG, "test"), "list_nodes", {"filters": ["state done"]}
+    )
+    assert result.isError is True
+    assert "state done" in result.content[0].text
+    get.assert_not_called()
