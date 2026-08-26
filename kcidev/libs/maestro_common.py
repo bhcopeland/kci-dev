@@ -34,21 +34,32 @@ def maestro_print_api_call(host, data=None):
         kci_info(json.dumps(data, indent=4))
 
 
-def maestro_api_error(response):
+class MaestroApiError(click.ClickException):
+    """A Maestro API call failed, carrying the detail the API reported."""
+
+    exit_code = errno.ENOENT
+
+
+def maestro_api_error_message(response):
     logging.error(
         f"Maestro API error - Status: {response.status_code}, URL: {response.url}"
     )
-    kci_err(f"API response error code: {response.status_code}")
+    detail = f"API response error code: {response.status_code}"
     try:
         error_data = response.json()
         logging.error(f"API error response: {json.dumps(error_data, indent=2)}")
-        kci_err(error_data)
+        return f"{detail}: {error_data}"
     except (json.decoder.JSONDecodeError, requests.exceptions.JSONDecodeError):
         logging.warning(f"No JSON in error response: {response.text}")
-        kci_warning(f"No JSON response. Plain text: {response.text}")
+        return f"{detail}. Plain text: {response.text}"
     except Exception as e:
         logging.error(f"Error parsing API response: {e}")
-        kci_err(f"API response error: {e}: {response.text}")
+        return f"{detail}: {e}: {response.text}"
+
+
+def maestro_api_error(response):
+    message = maestro_api_error_message(response)
+    kci_err(message)
     return
 
 
@@ -82,12 +93,10 @@ def maestro_get_node(url, nodeid):
         response.raise_for_status()
     except requests.exceptions.HTTPError as ex:
         logging.error(f"HTTP error fetching node {nodeid}: {ex}")
-        maestro_api_error(ex.response)
-        sys.exit(errno.ENOENT)
+        raise MaestroApiError(maestro_api_error_message(ex.response)) from ex
     except Exception as ex:
         logging.error(f"Unexpected error fetching node {nodeid}: {ex}")
-        kci_err(ex)
-        sys.exit(errno.ENOENT)
+        raise MaestroApiError(str(ex)) from ex
 
     node_data = response.json()
     if node_data is None:
@@ -122,12 +131,10 @@ def maestro_get_nodes(url, limit, offset, filter, paginate):
         response.raise_for_status()
     except requests.exceptions.HTTPError as ex:
         logging.error(f"HTTP error fetching nodes: {ex}")
-        maestro_api_error(ex.response)
-        sys.exit(errno.ENOENT)
+        raise MaestroApiError(maestro_api_error_message(ex.response)) from ex
     except Exception as ex:
         logging.error(f"Unexpected error fetching nodes: {ex}")
-        kci_err(ex)
-        sys.exit(errno.ENOENT)
+        raise MaestroApiError(str(ex)) from ex
 
     nodes_data = response.json()
     logging.info(f"Retrieved {len(nodes_data)} nodes")
