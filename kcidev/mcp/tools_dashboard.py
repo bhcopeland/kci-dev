@@ -7,6 +7,7 @@ from functools import wraps
 from kcidev.api import KciDevError, KernelCIClient
 from kcidev.libs.filters import StatusFilter
 from kcidev.mcp.errors import tool_errors
+from kcidev.mcp.validation import checked_status
 
 _active_client = ContextVar("dashboard_tool_client", default=None)
 
@@ -19,7 +20,7 @@ def _page(data, key, status, limit, offset, fields=None):
     items = data[key] if isinstance(data, dict) else data
     total = len(items)
     if status:
-        status_filter = StatusFilter(status)
+        status_filter = StatusFilter(checked_status(status))
         items = [item for item in items if status_filter.matches(item)]
     page = items[offset : offset + limit]
     if fields:
@@ -122,7 +123,7 @@ def list_builds(
     """List kernel builds for one commit of a tree.
 
     Optional filters: arch (e.g. 'arm64'), tree name, ISO date range, and
-    status ('pass', 'fail' or 'inconclusive'). Results are paginated with
+    status ('pass', 'fail', 'inconclusive' or 'all'). Results are paginated with
     limit/offset; the response carries 'total' (before status filtering)
     and 'matched' counts so you know whether to fetch further pages;
     fields projects each entry to only those keys.
@@ -153,7 +154,7 @@ def list_boots(
     """List boot test results for one commit of a tree.
 
     Optional filters: arch, tree name, ISO date range, boot origin, and
-    status ('pass', 'fail' or 'inconclusive'). Results are paginated with
+    status ('pass', 'fail', 'inconclusive' or 'all'). Results are paginated with
     limit/offset; the response carries 'total' (before status filtering)
     and 'matched' counts so you know whether to fetch further pages;
     fields projects each entry to only those keys.
@@ -183,7 +184,7 @@ def list_tests(
     """List test results for one commit of a tree.
 
     Optional filters: arch, tree name, ISO date range, and status ('pass',
-    'fail' or 'inconclusive'). A full commit can carry tens of thousands
+    'fail', 'inconclusive' or 'all'). A full commit can carry tens of thousands
     of tests, so filter by status and paginate with limit/offset; the
     response carries 'total' (before status filtering) and 'matched'
     counts so you know whether to fetch further pages; fields projects
@@ -264,7 +265,7 @@ def get_issue_builds(
 ):
     """List builds affected by a known issue.
 
-    Optional status filter ('pass', 'fail' or 'inconclusive') and
+    Optional status filter ('pass', 'fail', 'inconclusive' or 'all') and
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.
     """
@@ -283,7 +284,7 @@ def get_issue_tests(
 ):
     """List tests affected by a known issue.
 
-    Optional status filter ('pass', 'fail' or 'inconclusive') and
+    Optional status filter ('pass', 'fail', 'inconclusive' or 'all') and
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.
     """
