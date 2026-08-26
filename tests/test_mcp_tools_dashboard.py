@@ -241,3 +241,15 @@ def test_list_tests_rejects_unknown_status(monkeypatch):
     with pytest.raises(ToolExecutionError) as excinfo:
         tools_dashboard.list_tests(**_tree_args(status="borked"))
     assert "borked" in str(excinfo.value)
+
+
+def test_list_tests_rejects_negative_limit(monkeypatch):
+    _mock_get(monkeypatch, {"tests": [{"id": str(i)} for i in range(5)]})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.list_tests(**_tree_args(limit=-1))
+
+
+def test_list_tests_rejects_negative_offset(monkeypatch):
+    _mock_get(monkeypatch, {"tests": [{"id": str(i)} for i in range(5)]})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.list_tests(**_tree_args(offset=-1))
