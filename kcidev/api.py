@@ -447,6 +447,8 @@ class KernelCIClient:
         )
 
     def get_issue(self, issue_id):
+        if not issue_id or not issue_id.strip():
+            raise KciDevError("Issue id is required")
         return self._dashboard_request(
             "Dashboard issue request failed", dashboard_fetch_issue, issue_id, True
         )
