@@ -207,3 +207,25 @@ def test_list_nodes_projects_fields(monkeypatch):
     assert result.isError is False
     assert '"commit_message"' not in result.content[0].text
     assert '"n1"' in result.content[0].text
+
+
+def _no_http(monkeypatch):
+    from kcidev.libs import maestro_common
+
+    get = Mock()
+    monkeypatch.setattr(maestro_common.kcidev_session, "get", get)
+    return get
+
+
+def test_list_nodes_rejects_negative_limit(monkeypatch):
+    get = _no_http(monkeypatch)
+    result = _call_tool(create_server(CFG, "test"), "list_nodes", {"limit": -1})
+    assert result.isError is True
+    get.assert_not_called()
+
+
+def test_list_nodes_rejects_negative_offset(monkeypatch):
+    get = _no_http(monkeypatch)
+    result = _call_tool(create_server(CFG, "test"), "list_nodes", {"offset": -1})
+    assert result.isError is True
+    get.assert_not_called()
