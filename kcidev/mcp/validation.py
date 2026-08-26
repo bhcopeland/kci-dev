@@ -13,3 +13,10 @@ def checked_status(status):
             f"Unknown status {status!r}: expected one of {', '.join(STATUS_CHOICES)}"
         )
     return normalised
+
+
+def check_page_bounds(limit, offset):
+    if limit < 0:
+        raise KciDevError(f"Invalid limit {limit}: must be zero or greater")
+    if offset < 0:
+        raise KciDevError(f"Invalid offset {offset}: must be zero or greater")
