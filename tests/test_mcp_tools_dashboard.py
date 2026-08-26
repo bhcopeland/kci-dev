@@ -282,3 +282,30 @@ def test_get_issue_tests_still_reports_other_errors(monkeypatch):
     _mock_get(monkeypatch, {"error": "Issue not found"})
     with pytest.raises(ToolExecutionError):
         tools_dashboard.get_issue_tests("maestro:nope")
+
+
+def _tree_args(**extra):
+    args = {
+        "giturl": "https://git.example.org/linux.git",
+        "branch": "master",
+        "commit": "deadbeef",
+    }
+    args.update(extra)
+    return args
+
+
+def test_list_tests_accepts_uppercase_status(monkeypatch):
+    _mock_get(
+        monkeypatch,
+        {"tests": [{"id": "p1", "status": "PASS"}, {"id": "f1", "status": "FAIL"}]},
+    )
+    result = tools_dashboard.list_tests(**_tree_args(status="FAIL"))
+    assert result["matched"] == 1
+    assert result["tests"] == [{"id": "f1", "status": "FAIL"}]
+
+
+def test_list_tests_rejects_unknown_status(monkeypatch):
+    _mock_get(monkeypatch, {"tests": [{"id": "f1", "status": "FAIL"}]})
+    with pytest.raises(ToolExecutionError) as excinfo:
+        tools_dashboard.list_tests(**_tree_args(status="borked"))
+    assert "borked" in str(excinfo.value)
