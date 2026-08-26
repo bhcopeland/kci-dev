@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from kcidev.mcp.errors import tool_errors
-from kcidev.mcp.validation import check_page_bounds
+from kcidev.mcp.validation import check_page_bounds, checked_filters
 
 
 def register_tools(server, client, api_url, pipeline_url, token):
@@ -46,7 +46,9 @@ def register_tools(server, client, api_url, pipeline_url, token):
             fields to project each node to only those keys.
             """
             check_page_bounds(limit, offset)
-            nodes = client.get_nodes(limit=limit, offset=offset, filters=filters or [])
+            nodes = client.get_nodes(
+                limit=limit, offset=offset, filters=checked_filters(filters)
+            )
             if fields:
                 return [{k: n[k] for k in fields if k in n} for n in nodes]
             return nodes
