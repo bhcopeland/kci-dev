@@ -7,7 +7,7 @@ from functools import wraps
 from kcidev.api import KciDevError, KernelCIClient
 from kcidev.libs.filters import StatusFilter
 from kcidev.mcp.errors import tool_errors
-from kcidev.mcp.validation import checked_status
+from kcidev.mcp.validation import check_page_bounds, checked_status
 
 _active_client = ContextVar("dashboard_tool_client", default=None)
 
@@ -17,6 +17,7 @@ def _current_client():
 
 
 def _page(data, key, status, limit, offset, fields=None):
+    check_page_bounds(limit, offset)
     items = data[key] if isinstance(data, dict) else data
     total = len(items)
     if status:
