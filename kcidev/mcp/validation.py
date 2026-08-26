@@ -20,3 +20,13 @@ def check_page_bounds(limit, offset):
         raise KciDevError(f"Invalid limit {limit}: must be zero or greater")
     if offset < 0:
         raise KciDevError(f"Invalid offset {offset}: must be zero or greater")
+
+
+def checked_filters(filters):
+    for entry in filters or []:
+        if "=" not in entry:
+            raise KciDevError(
+                f"Invalid filter {entry!r}: expected 'field=value', "
+                "for example 'state=done'"
+            )
+    return list(filters or [])
