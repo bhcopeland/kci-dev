@@ -239,3 +239,22 @@ def test_list_nodes_rejects_filter_without_equals(monkeypatch):
     assert result.isError is True
     assert "state done" in result.content[0].text
     get.assert_not_called()
+
+
+def test_list_nodes_rejects_limit_above_cap(monkeypatch):
+    get = _no_http(monkeypatch)
+    result = _call_tool(create_server(CFG, "test"), "list_nodes", {"limit": 5000})
+    assert result.isError is True
+    get.assert_not_called()
+
+
+def test_list_nodes_default_limit_is_modest(monkeypatch):
+    from kcidev.libs import maestro_common
+
+    response = Mock(status_code=200)
+    response.json.return_value = []
+    get = Mock(return_value=response)
+    monkeypatch.setattr(maestro_common.kcidev_session, "get", get)
+    result = _call_tool(create_server(CFG, "test"), "list_nodes", {})
+    assert result.isError is False
+    assert dict(get.call_args.kwargs["params"])["limit"] == 20

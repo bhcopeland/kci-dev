@@ -5,6 +5,10 @@ from kcidev.api import KciDevError
 
 STATUS_CHOICES = ("all", "pass", "fail", "inconclusive")
 
+MAX_PAGE_LIMIT = 200
+
+MAX_NODE_LIMIT = 100
+
 
 def checked_status(status):
     normalised = status.strip().lower()
@@ -15,9 +19,14 @@ def checked_status(status):
     return normalised
 
 
-def check_page_bounds(limit, offset):
+def check_page_bounds(limit, offset, max_limit=MAX_PAGE_LIMIT):
     if limit < 0:
         raise KciDevError(f"Invalid limit {limit}: must be zero or greater")
+    if limit > max_limit:
+        raise KciDevError(
+            f"Invalid limit {limit}: must be at most {max_limit}. Page through "
+            "results with offset, and use fields to narrow each entry"
+        )
     if offset < 0:
         raise KciDevError(f"Invalid offset {offset}: must be zero or greater")
 

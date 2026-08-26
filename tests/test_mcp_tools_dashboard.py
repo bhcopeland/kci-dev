@@ -260,3 +260,10 @@ def test_get_issue_rejects_empty_id(monkeypatch):
     with pytest.raises(ToolExecutionError):
         tools_dashboard.get_issue("")
     get.assert_not_called()
+
+
+def test_list_tests_rejects_limit_above_cap(monkeypatch):
+    _mock_get(monkeypatch, {"tests": [{"id": str(i)} for i in range(5)]})
+    with pytest.raises(ToolExecutionError) as excinfo:
+        tools_dashboard.list_tests(**_tree_args(limit=5000))
+    assert "5000" in str(excinfo.value)

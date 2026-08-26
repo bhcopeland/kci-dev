@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from kcidev.mcp.errors import tool_errors
-from kcidev.mcp.validation import check_page_bounds, checked_filters
+from kcidev.mcp.validation import MAX_NODE_LIMIT, check_page_bounds, checked_filters
 
 
 def register_tools(server, client, api_url, pipeline_url, token):
@@ -29,7 +29,7 @@ def register_tools(server, client, api_url, pipeline_url, token):
         @tool_errors
         def list_nodes(
             filters: list[str] | None = None,
-            limit: int = 50,
+            limit: int = 20,
             offset: int = 0,
             fields: list[str] | None = None,
         ):
@@ -42,10 +42,11 @@ def register_tools(server, client, api_url, pipeline_url, token):
             are returned oldest first, so to reach recent nodes window the
             query with a filter such as 'created__gt=2026-07-01' rather
             than paginating from the start. Use limit and offset to
-            paginate within the window; full nodes are large, so use
-            fields to project each node to only those keys.
+            paginate within the window; full nodes are large, so keep
+            limit small (100 at most) and use fields to project each
+            node to only those keys.
             """
-            check_page_bounds(limit, offset)
+            check_page_bounds(limit, offset, max_limit=MAX_NODE_LIMIT)
             nodes = client.get_nodes(
                 limit=limit, offset=offset, filters=checked_filters(filters)
             )
