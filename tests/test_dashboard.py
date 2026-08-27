@@ -1,5 +1,7 @@
 from unittest.mock import Mock
 
+import click
+import pytest
 from click.testing import CliRunner
 
 from kcidev.libs import dashboard
@@ -170,3 +172,50 @@ def test_kernelci_clients_keep_independent_dashboard_endpoints(monkeypatch):
     assert urls[1].startswith(dashboard.DASHBOARD_API_DEFAULT)
     assert urls[2].startswith("https://three.example/api/")
     assert urls[3].startswith("https://one.example/api/")
+
+
+def _issue_collection_get(monkeypatch):
+    response = Mock(status_code=200)
+    response.json.return_value = {"issues": [{"id": "maestro:one"}]}
+    get = Mock(return_value=response)
+    monkeypatch.setattr(dashboard.kcidev_session, "get", get)
+    return get
+
+
+def test_dashboard_fetch_issue_rejects_empty_id(monkeypatch):
+    get = _issue_collection_get(monkeypatch)
+
+    with pytest.raises(click.ClickException):
+        dashboard.dashboard_fetch_issue("", False)
+
+    get.assert_not_called()
+
+
+def test_dashboard_fetch_issue_builds_rejects_empty_id(monkeypatch):
+    get = _issue_collection_get(monkeypatch)
+
+    with pytest.raises(click.ClickException):
+        dashboard.dashboard_fetch_issue_builds(None, "", False)
+
+    get.assert_not_called()
+
+
+def test_dashboard_fetch_issue_tests_rejects_empty_id(monkeypatch):
+    get = _issue_collection_get(monkeypatch)
+
+    with pytest.raises(click.ClickException):
+        dashboard.dashboard_fetch_issue_tests(None, "", False)
+
+    get.assert_not_called()
+
+
+def test_cli_issue_command_rejects_empty_id(monkeypatch):
+    from kcidev.main import get_cli
+
+    get = _issue_collection_get(monkeypatch)
+
+    runner = CliRunner()
+    result = runner.invoke(get_cli(), ["results", "issue", "--id", ""])
+
+    assert result.exit_code != 0
+    get.assert_not_called()
