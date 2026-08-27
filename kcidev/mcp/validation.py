@@ -5,6 +5,8 @@ from kcidev.api import KciDevError
 
 STATUS_CHOICES = ("all", "pass", "fail", "inconclusive")
 
+MAX_LAB_DAYS = 7
+
 
 def checked_status(status):
     normalised = status.strip().lower()
@@ -30,3 +32,14 @@ def checked_filters(filters):
                 "for example 'state=done'"
             )
     return list(filters or [])
+
+
+def checked_days(days, maximum=MAX_LAB_DAYS):
+    if days < 1:
+        raise KciDevError(f"Invalid days {days}: must be one or greater")
+    if days > maximum:
+        raise KciDevError(
+            f"Invalid days {days}: must be at most {maximum}. Wider windows "
+            "time out in the dashboard metrics aggregation"
+        )
+    return days
