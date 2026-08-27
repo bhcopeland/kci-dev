@@ -321,3 +321,10 @@ def test_list_tests_rejects_negative_offset(monkeypatch):
     _mock_get(monkeypatch, {"tests": [{"id": str(i)} for i in range(5)]})
     with pytest.raises(ToolExecutionError):
         tools_dashboard.list_tests(**_tree_args(offset=-1))
+
+
+def test_get_issue_rejects_empty_id(monkeypatch):
+    get = _mock_get(monkeypatch, {"issues": [{"id": "maestro:one"}]})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.get_issue("")
+    get.assert_not_called()
