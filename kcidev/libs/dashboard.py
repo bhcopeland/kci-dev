@@ -112,13 +112,14 @@ def _dashboard_request(func):
                 logging.debug(f"Response data size: {len(json.dumps(data))} bytes")
 
                 if "error" in data:
+                    explained = _explain_dashboard_error(str(data.get("error")))
                     if error_verbose:
                         logging.error(f"API returned error: {data.get('error')}")
                         if use_json:
                             kci_msg(data)
                         else:
-                            kci_msg("json error: " + str(data["error"]))
-                    raise click.ClickException(data.get("error"))
+                            kci_msg("API error: " + explained)
+                    raise click.ClickException(explained)
 
                 logging.info(f"Successfully completed {func.__name__} request")
                 return data
@@ -138,6 +139,30 @@ def _dashboard_request(func):
 @_dashboard_request
 def dashboard_api_post(endpoint, params, use_json, body, max_retries=3):
     return kcidev_session.post(endpoint, json=body, timeout=HTTP_TIMEOUT)
+
+
+_NOT_FOUND_HINTS = (
+    (
+        "No results available for this tree/branch/commit",
+        "The dashboard has no checkout recorded for that tree, branch and "
+        "commit together. List the ones it knows with 'kci-dev results "
+        "trees' (or the list_trees tool) and use a commit from there.",
+    ),
+    (
+        "Tree checkout not found",
+        "The dashboard has no checkout recorded for that tree, branch and "
+        "commit together. List the ones it knows with 'kci-dev results "
+        "trees' (or the list_trees tool) and use a commit from there.",
+    ),
+)
+
+
+def _explain_dashboard_error(message):
+    """Append guidance to the dashboard errors that mean "look elsewhere"."""
+    for marker, hint in _NOT_FOUND_HINTS:
+        if marker in message:
+            return f"{message}. {hint}"
+    return message
 
 
 @_dashboard_request
