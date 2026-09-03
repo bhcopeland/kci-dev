@@ -207,3 +207,31 @@ def test_list_nodes_projects_fields(monkeypatch):
     assert result.isError is False
     assert '"commit_message"' not in result.content[0].text
     assert '"n1"' in result.content[0].text
+
+
+def _http_error_response(monkeypatch, status, payload):
+    from kcidev.libs import maestro_common
+
+    response = Mock(status_code=status, url="https://api.example.org/latest/node/x")
+    response.json.return_value = payload
+    response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+        response=response
+    )
+    monkeypatch.setattr(
+        maestro_common.kcidev_session, "get", Mock(return_value=response)
+    )
+    return response
+
+
+def test_get_node_http_error_keeps_api_detail(monkeypatch):
+    _http_error_response(monkeypatch, 404, {"detail": "Node not found"})
+    result = _call_tool(create_server(CFG, "test"), "get_node", {"node_id": "0" * 24})
+    assert result.isError is True
+    assert "404" in result.content[0].text
+
+
+def test_list_nodes_http_error_keeps_api_detail(monkeypatch):
+    _http_error_response(monkeypatch, 422, {"detail": "bad filter"})
+    result = _call_tool(create_server(CFG, "test"), "list_nodes", {})
+    assert result.isError is True
+    assert "422" in result.content[0].text

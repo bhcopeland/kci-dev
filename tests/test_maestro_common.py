@@ -124,10 +124,11 @@ def test_maestro_get_node_plain_text_http_error_is_clean(monkeypatch):
         maestro_common.kcidev_session, "get", Mock(return_value=response)
     )
 
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(maestro_common.MaestroApiError) as exc_info:
         maestro_common.maestro_get_node("https://api.example.org", "n1")
 
-    assert exc_info.value.code == 2
+    assert exc_info.value.exit_code == 2
+    assert "upstream unavailable" in exc_info.value.message
 
 
 def test_maestro_print_nodes_emits_one_json_document(capsys):
