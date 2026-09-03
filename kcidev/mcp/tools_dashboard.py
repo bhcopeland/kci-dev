@@ -324,6 +324,9 @@ def get_issue_builds(
 ):
     """List builds affected by a known issue.
 
+    An empty list means the issue has no builds recorded against it, and
+    also what an unknown issue id returns, since the dashboard reports
+    both the same way; confirm the id with get_issue if it matters.
     Optional status filter ('pass', 'fail' or 'inconclusive') and
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.
@@ -343,6 +346,9 @@ def get_issue_tests(
 ):
     """List tests affected by a known issue.
 
+    An empty list means the issue has no tests recorded against it, and
+    also what an unknown issue id returns, since the dashboard reports
+    both the same way; confirm the id with get_issue if it matters.
     Optional status filter ('pass', 'fail' or 'inconclusive') and
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.

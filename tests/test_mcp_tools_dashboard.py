@@ -261,3 +261,24 @@ def test_get_test_issues_still_reports_other_errors(monkeypatch):
     _mock_get(monkeypatch, {"error": "Test not found"})
     with pytest.raises(ToolExecutionError):
         tools_dashboard.get_test_issues("maestro:nope")
+
+
+def test_get_issue_tests_returns_empty_when_none_are_tracked(monkeypatch):
+    get = _mock_get(monkeypatch, {"error": "No tests found for this issue"})
+    result = tools_dashboard.get_issue_tests("maestro:i1")
+    assert result["tests"] == []
+    assert result["matched"] == 0
+    assert get.called
+
+
+def test_get_issue_builds_returns_empty_when_none_are_tracked(monkeypatch):
+    _mock_get(monkeypatch, {"error": "No builds found for this issue"})
+    result = tools_dashboard.get_issue_builds("maestro:i1")
+    assert result["builds"] == []
+    assert result["matched"] == 0
+
+
+def test_get_issue_tests_still_reports_other_errors(monkeypatch):
+    _mock_get(monkeypatch, {"error": "Issue not found"})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.get_issue_tests("maestro:nope")

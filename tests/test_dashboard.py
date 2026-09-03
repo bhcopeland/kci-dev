@@ -1,5 +1,7 @@
 from unittest.mock import Mock
 
+import click
+import pytest
 from click.testing import CliRunner
 
 from kcidev.libs import dashboard
@@ -170,3 +172,29 @@ def test_kernelci_clients_keep_independent_dashboard_endpoints(monkeypatch):
     assert urls[1].startswith(dashboard.DASHBOARD_API_DEFAULT)
     assert urls[2].startswith("https://three.example/api/")
     assert urls[3].startswith("https://one.example/api/")
+
+
+def _error_response(monkeypatch, message):
+    response = Mock(status_code=200)
+    response.json.return_value = {"error": message}
+    monkeypatch.setattr(dashboard.kcidev_session, "get", Mock(return_value=response))
+
+
+def test_unknown_checkout_error_says_how_to_find_a_valid_one(monkeypatch):
+    _error_response(monkeypatch, "No results available for this tree/branch/commit")
+
+    with pytest.raises(click.ClickException) as excinfo:
+        dashboard.dashboard_api_fetch("tree/deadbeef/tests", {}, False)
+
+    message = excinfo.value.message
+    assert "No results available" in message
+    assert "results trees" in message
+
+
+def test_other_dashboard_errors_are_passed_through_unchanged(monkeypatch):
+    _error_response(monkeypatch, "Build not found")
+
+    with pytest.raises(click.ClickException) as excinfo:
+        dashboard.dashboard_api_fetch("build/x", {}, False)
+
+    assert excinfo.value.message == "Build not found"

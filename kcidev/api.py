@@ -109,6 +109,13 @@ def _as_library_error(action, func, *args, **kwargs):
         raise KciDevError(action) from exc
 
 
+NOTHING_RELATED_MARKERS = (
+    "No issues found",
+    "No issues were found",
+    "No tests found",
+    "No builds found",
+)
+
 MAX_LOG_BYTES = 1 << 20
 LOG_SCAN_LIMIT = 64 << 20
 LOG_DEADLINE_SECONDS = 60
@@ -632,33 +639,36 @@ class KernelCIClient:
             True,
         )
 
-    def _issues_or_empty(self, action, func, item_id, error_verbose):
-        """Fetch issues for one artifact, treating "none tracked" as empty.
+    def _related_or_empty(self, action, func, *args):
+        """Fetch one artifact's related list, treating "none" as empty.
 
-        The dashboard reports an artifact with no known issues as an
-        error rather than an empty list, which callers that ask "is this
-        failure already known" should read as a clean answer.
+        The dashboard reports an artifact with nothing related to it as
+        an error rather than an empty list. A caller asking what an
+        issue affects, or whether a failure is already known, should
+        read that as a clean answer rather than a failed call.
         """
         try:
-            return self._dashboard_request(action, func, item_id, True, error_verbose)
+            return self._dashboard_request(action, func, *args)
         except KciDevError as exc:
-            if "No issues" in str(exc):
+            if any(marker in str(exc) for marker in NOTHING_RELATED_MARKERS):
                 return []
             raise
 
     def get_build_issues(self, build_id, error_verbose=True):
-        return self._issues_or_empty(
+        return self._related_or_empty(
             "Dashboard build issues request failed",
             dashboard_fetch_build_issues,
             build_id,
+            True,
             error_verbose,
         )
 
     def get_boot_issues(self, test_id, error_verbose=True):
-        return self._issues_or_empty(
+        return self._related_or_empty(
             "Dashboard boot issues request failed",
             dashboard_fetch_boot_issues,
             test_id,
+            True,
             error_verbose,
         )
 
@@ -677,21 +687,23 @@ class KernelCIClient:
         )
 
     def get_issue_builds(self, issue_id, origin=None):
-        return self._dashboard_request(
+        return self._related_or_empty(
             "Dashboard issue builds request failed",
             dashboard_fetch_issue_builds,
             origin,
             issue_id,
             True,
+            False,
         )
 
     def get_issue_tests(self, issue_id, origin=None):
-        return self._dashboard_request(
+        return self._related_or_empty(
             "Dashboard issue tests request failed",
             dashboard_fetch_issue_tests,
             origin,
             issue_id,
             True,
+            False,
         )
 
     def get_issues_extra(self, issues):
