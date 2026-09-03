@@ -17,8 +17,9 @@ MCP support is an optional extra:
 pip install kci-dev[mcp]
 ```
 
-Read-only dashboard query tools (trees, builds, boots, tests, hardware,
-known issues) are always available and need no configuration. Maestro
+Read-only dashboard query tools (trees, builds, boots, tests, logs,
+hardware, known issues) are always available and need no configuration.
+Maestro
 node lookup tools are enabled when the configured instance has an `api`
 URL, and job retry/checkout trigger tools when it also has a `pipeline`
 URL and a `token`. See the [config file](../config_file.md) documentation.

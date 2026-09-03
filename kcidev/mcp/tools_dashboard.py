@@ -237,6 +237,46 @@ def get_test(test_id: str):
 
 
 @tool_errors
+def get_log(test_id: str, max_bytes: int = 16384, tail: bool = True):
+    """Fetch the raw log for a test or job by dashboard test id.
+
+    Downloads and decompresses the log, resolving it from the test's
+    log_url or, when that is empty (common for failures), a log entry in
+    output_files. Returns it size-bounded: by default the last max_bytes,
+    where failures usually are (set tail=false for the start). The
+    response reports total_bytes and truncated so you can widen max_bytes
+    if needed, up to a 1 MiB ceiling: asking for more returns that
+    ceiling rather than the whole log, so compare returned_bytes with
+    total_bytes rather than retrying the same call. A download that runs
+    past about a minute stops early and sets deadline_exceeded. Use
+    get_test first for the shorter log_excerpt.
+    """
+    return _current_client().get_log(test_id, max_bytes=max_bytes, tail=tail)
+
+
+@tool_errors
+def get_test_issues(test_id: str):
+    """List known issues detected on a specific test or boot.
+
+    Use this to check a failing test against issues KernelCI already
+    tracks before treating the failure as new. Test ids look like
+    'maestro:<hex>'.
+    """
+    return _current_client().get_boot_issues(test_id)
+
+
+@tool_errors
+def get_build_issues(build_id: str):
+    """List known issues detected on a specific build.
+
+    Use this to check a failing build against issues KernelCI already
+    tracks before treating the failure as new. Build ids look like
+    'maestro:<hex>'.
+    """
+    return _current_client().get_build_issues(build_id)
+
+
+@tool_errors
 def list_hardware(origin: str = "maestro"):
     """List hardware platforms with results over the last 7 days.
 
@@ -321,6 +361,9 @@ READ_ONLY_TOOLS = (
     list_tests,
     get_build,
     get_test,
+    get_log,
+    get_test_issues,
+    get_build_issues,
     list_hardware,
     get_hardware_summary,
     list_issues,

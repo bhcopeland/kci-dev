@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from kcidev import KciDevError, KernelCIClient
+from kcidev import KciDevError, KernelCIClient, api
 from kcidev.libs import maestro_common
 
 CFG = {
@@ -301,3 +301,443 @@ def test_compare_results_only_fetches_issues_when_requested(monkeypatch):
 
     assert report["items"][0]["known_issues"] == ["issue-1"]
     get_issues.assert_called_once_with("head-test", error_verbose=False)
+
+
+class _FakeStream:
+    def __init__(self, chunks, status_code=200, headers=None, raise_after=None):
+        self._chunks = list(chunks)
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.closed = False
+        self._raise_after = raise_after
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, size):
+        for i, chunk in enumerate(self._chunks):
+            if self._raise_after is not None and i == self._raise_after:
+                raise requests.exceptions.ChunkedEncodingError("conn reset")
+            yield chunk
+
+    def close(self):
+        self.closed = True
+
+
+def _log_test(url="https://files.kernelci.org/x.log", output_files=None):
+    return {"log_url": url, "output_files": output_files or []}
+
+
+def _mock_stream(monkeypatch, chunks):
+    monkeypatch.setattr(api, "_stream_public_get", lambda url: _FakeStream(chunks))
+
+
+def _addrinfo(ip, port=443):
+    return [(2, 1, 6, "", (ip, port))]
+
+
+def test_get_log_decompresses_gzip(monkeypatch):
+    import gzip
+
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/log.gz")
+    )
+    _mock_stream(monkeypatch, [gzip.compress(b"boot ok\nTEST FAIL: oops\n")])
+    out = _client().get_log("maestro:abc")
+    assert out["truncated"] is False
+    assert "TEST FAIL: oops" in out["text"]
+    assert out["total_bytes"] == len(b"boot ok\nTEST FAIL: oops\n")
+
+
+def test_get_log_tail_truncates(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"A" * 100 + b"TAILEND"])
+    out = _client().get_log("t", max_bytes=7, tail=True)
+    assert out["truncated"] is True
+    assert out["text"] == "TAILEND"
+    assert out["returned_bytes"] == 7
+
+
+def test_get_log_head_truncates(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"HEADSTART" + b"Z" * 100])
+    out = _client().get_log("t", max_bytes=9, tail=False)
+    assert out["text"] == "HEADSTART"
+    assert out["truncated"] is True
+
+
+def test_get_log_tail_spans_chunk_boundaries(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"1234567890", b"abcde", b"XYZ"])
+    out = _client().get_log("t", max_bytes=5, tail=True)
+    assert out["text"] == "deXYZ"
+    assert out["total_bytes"] == 18
+
+
+def test_get_log_no_url_raises(monkeypatch):
+    monkeypatch.setattr(
+        KernelCIClient,
+        "get_test",
+        lambda self, tid: {"log_url": None, "output_files": []},
+    )
+    with pytest.raises(KciDevError, match="No log available"):
+        _client().get_log("t")
+
+
+def test_get_log_falls_back_to_output_files(monkeypatch):
+    test = {
+        "log_url": None,
+        "output_files": [
+            {"name": "build_kselftest_stderr_log", "url": "https://f/stderr.log.gz"},
+            {"name": "test_log", "url": "https://f/test.log.gz"},
+            {"name": "job_definition", "url": "https://f/def.json"},
+        ],
+    }
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: test)
+    _mock_stream(monkeypatch, [b"from output_files"])
+    out = _client().get_log("t")
+    assert out["log_url"] == "https://f/test.log.gz"
+    assert out["text"] == "from output_files"
+
+
+@pytest.mark.parametrize("bad", [0, -1, -1000, 1.5, True, "100"])
+def test_get_log_rejects_bad_max_bytes(bad):
+    with pytest.raises(KciDevError, match="positive integer"):
+        _client().get_log("t", max_bytes=bad)
+
+
+def test_get_log_clamps_oversized_max_bytes(monkeypatch):
+    monkeypatch.setattr(api, "MAX_LOG_BYTES", 10)
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"B" * 50])
+    out = _client().get_log("t", max_bytes=10_000, tail=False)
+    assert out["returned_bytes"] == 10
+    assert out["truncated"] is True
+
+
+def test_get_log_scan_limit_bounds_download(monkeypatch):
+    monkeypatch.setattr(api, "LOG_SCAN_LIMIT", 20)
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"C" * 15, b"D" * 15, b"E" * 15])
+    out = _client().get_log("t", max_bytes=100, tail=False)
+    assert out["scan_limited"] is True
+    assert out["truncated"] is True
+    assert out["total_bytes"] == 15
+
+
+def test_get_log_truncated_gzip_raises(monkeypatch):
+    import gzip
+
+    good = gzip.compress(b"hello world" * 50)
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/x.gz")
+    )
+    _mock_stream(monkeypatch, [good[:20]])
+    with pytest.raises(KciDevError, match="incomplete or malformed"):
+        _client().get_log("t")
+
+
+def test_get_log_corrupt_gzip_raises(monkeypatch):
+    import gzip
+
+    good = gzip.compress(b"hello world" * 50)
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/x.gz")
+    )
+    _mock_stream(monkeypatch, [good[:10] + b"\x00" * 40])
+    with pytest.raises(KciDevError, match="Log download failed"):
+        _client().get_log("t")
+
+
+def test_get_log_download_failure_raises(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+
+    def boom(url):
+        raise requests.exceptions.ConnectionError("no route")
+
+    monkeypatch.setattr(api, "_stream_public_get", boom)
+    with pytest.raises(KciDevError, match="Log download failed"):
+        _client().get_log("t")
+
+
+def test_require_public_url_rejects_non_http():
+    with pytest.raises(KciDevError, match="non-http"):
+        api._require_public_url("ftp://files.kernelci.org/x")
+    with pytest.raises(KciDevError, match="non-http"):
+        api._require_public_url("file:///etc/passwd")
+
+
+@pytest.mark.parametrize(
+    "ip", ["127.0.0.1", "10.0.0.5", "192.168.1.1", "169.254.169.254", "::1"]
+)
+def test_require_public_url_rejects_private(monkeypatch, ip):
+    monkeypatch.setattr(api.socket, "getaddrinfo", lambda *a, **k: _addrinfo(ip))
+    with pytest.raises(KciDevError, match="non-public"):
+        api._require_public_url("https://evil.example/x")
+
+
+def test_require_public_url_allows_public(monkeypatch):
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    api._require_public_url("https://files.kernelci.org/x")
+
+
+def test_require_public_url_unresolvable(monkeypatch):
+    def boom(*a, **k):
+        raise api.socket.gaierror("nope")
+
+    monkeypatch.setattr(api.socket, "getaddrinfo", boom)
+    with pytest.raises(KciDevError, match="resolve"):
+        api._require_public_url("https://nope.invalid/x")
+
+
+def test_stream_public_get_follows_validated_redirect(monkeypatch):
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    r1 = Mock(status_code=302, headers={"Location": "https://cdn.example/final"})
+    r1.close = Mock()
+    r2 = _FakeStream([b"ok"])
+    calls = []
+
+    def fake_get(url, **k):
+        calls.append(url)
+        return r1 if len(calls) == 1 else r2
+
+    monkeypatch.setattr(api.kcidev_session, "get", fake_get)
+    assert api._stream_public_get("https://files.kernelci.org/x") is r2
+    assert calls == ["https://files.kernelci.org/x", "https://cdn.example/final"]
+
+
+def test_stream_public_get_rejects_redirect_to_private(monkeypatch):
+    def ai(host, *a, **k):
+        good = host == "files.kernelci.org"
+        return _addrinfo("93.184.216.34" if good else "169.254.169.254")
+
+    monkeypatch.setattr(api.socket, "getaddrinfo", ai)
+    r1 = Mock(
+        status_code=302, headers={"Location": "http://169.254.169.254/latest/meta"}
+    )
+    r1.close = Mock()
+    monkeypatch.setattr(api.kcidev_session, "get", Mock(return_value=r1))
+    with pytest.raises(KciDevError, match="non-public"):
+        api._stream_public_get("https://files.kernelci.org/x")
+
+
+def test_stream_public_get_too_many_redirects(monkeypatch):
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    rr = Mock(status_code=302, headers={"Location": "https://a.example/loop"})
+    rr.close = Mock()
+    monkeypatch.setattr(api.kcidev_session, "get", Mock(return_value=rr))
+    with pytest.raises(KciDevError, match="Too many redirects"):
+        api._stream_public_get("https://a.example/loop")
+
+
+def test_gunzip_iter_roundtrip():
+    import gzip
+
+    assert b"".join(api._gunzip_iter([gzip.compress(b"hello")])) == b"hello"
+
+
+def test_gunzip_iter_truncated_raises():
+    import gzip
+
+    good = gzip.compress(b"data" * 100)
+    with pytest.raises(KciDevError, match="incomplete or malformed"):
+        list(api._gunzip_iter([good[:15]]))
+
+
+def test_gunzip_iter_multi_member():
+    import gzip
+
+    stream = gzip.compress(b"first\n") + gzip.compress(b"SECOND\n")
+    assert b"".join(api._gunzip_iter([stream])) == b"first\nSECOND\n"
+
+
+def test_gunzip_iter_multi_member_split_and_boundary():
+    import gzip
+
+    stream = gzip.compress(b"AAA") + gzip.compress(b"BBB")
+    split = [stream[:4], stream[4:]]
+    assert b"".join(api._gunzip_iter(split)) == b"AAABBB"
+    boundary = [gzip.compress(b"AAA"), gzip.compress(b"BBB")]
+    assert b"".join(api._gunzip_iter(boundary)) == b"AAABBB"
+
+
+def test_gunzip_iter_tolerates_trailing_garbage():
+    import gzip
+
+    assert b"".join(api._gunzip_iter([gzip.compress(b"log") + b"junk"])) == b"log"
+
+
+def test_get_log_reads_multi_member_gzip(monkeypatch):
+    import gzip
+
+    stream = gzip.compress(b"member one\n") + gzip.compress(b"MEMBER TWO FAIL\n")
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/x.gz")
+    )
+    _mock_stream(monkeypatch, [stream])
+    out = _client().get_log("t")
+    assert "MEMBER TWO FAIL" in out["text"]
+    assert out["truncated"] is False
+    assert out["total_bytes"] == len(b"member one\nMEMBER TWO FAIL\n")
+
+
+def test_get_log_closes_response_on_success(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    stream = _FakeStream([b"hello"])
+    monkeypatch.setattr(api, "_stream_public_get", lambda url: stream)
+    _client().get_log("t")
+    assert stream.closed is True
+
+
+def test_get_log_closes_response_on_gzip_error(monkeypatch):
+    import gzip
+
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/x.gz")
+    )
+    stream = _FakeStream([gzip.compress(b"data" * 50)[:20]])
+    monkeypatch.setattr(api, "_stream_public_get", lambda url: stream)
+    with pytest.raises(KciDevError):
+        _client().get_log("t")
+    assert stream.closed is True
+
+
+def test_get_log_closes_response_on_stream_error(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    stream = _FakeStream([b"a", b"b"], raise_after=1)
+    monkeypatch.setattr(api, "_stream_public_get", lambda url: stream)
+    with pytest.raises(KciDevError, match="Log download failed"):
+        _client().get_log("t")
+    assert stream.closed is True
+
+
+def test_get_log_raw_scan_limit_bounds_compressed(monkeypatch):
+    import gzip
+
+    monkeypatch.setattr(api, "LOG_SCAN_LIMIT", 15)
+    monkeypatch.setattr(
+        KernelCIClient, "get_test", lambda self, tid: _log_test("https://f/x.gz")
+    )
+    gz = gzip.compress(b"hi there friend")
+    _mock_stream(monkeypatch, [gz[:2], gz[2:10], gz[10:20], gz[20:]])
+    out = _client().get_log("t")
+    assert out["scan_limited"] is True
+    assert out["truncated"] is True
+
+
+def test_get_log_output_files_url_goes_through_guard(monkeypatch):
+    test = {
+        "log_url": None,
+        "output_files": [{"name": "test_log", "url": "https://internal.evil/x.log"}],
+    }
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: test)
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("169.254.169.254")
+    )
+    with pytest.raises(KciDevError, match="non-public"):
+        _client().get_log("t")
+
+
+def test_get_log_ignores_non_string_output_file_name(monkeypatch):
+    test = {
+        "log_url": None,
+        "output_files": [
+            {"name": 7, "url": "https://f/weird"},
+            {"name": "test_log", "url": "https://f/ok.log"},
+        ],
+    }
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: test)
+    _mock_stream(monkeypatch, [b"ok"])
+    out = _client().get_log("t")
+    assert out["log_url"] == "https://f/ok.log"
+
+
+def test_require_public_url_rejects_bad_port():
+    with pytest.raises(KciDevError, match="[Pp]ort"):
+        api._require_public_url("https://files.kernelci.org:99999/x")
+
+
+@pytest.mark.parametrize(
+    "ip", ["::ffff:127.0.0.1", "::ffff:169.254.169.254", "0.0.0.0"]
+)
+def test_require_public_url_rejects_mapped_and_unspecified(monkeypatch, ip):
+    monkeypatch.setattr(api.socket, "getaddrinfo", lambda *a, **k: _addrinfo(ip))
+    with pytest.raises(KciDevError, match="non-public"):
+        api._require_public_url("https://evil.example/x")
+
+
+def test_require_public_url_idna_error_is_clean(monkeypatch):
+    def boom(*a, **k):
+        raise UnicodeError("label too long")
+
+    monkeypatch.setattr(api.socket, "getaddrinfo", boom)
+    with pytest.raises(KciDevError, match="resolve"):
+        api._require_public_url("https://" + "a" * 70 + ".example/x")
+
+
+def test_stream_public_get_redirect_without_location(monkeypatch):
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    r = Mock(status_code=302, headers={})
+    r.close = Mock()
+    monkeypatch.setattr(api.kcidev_session, "get", Mock(return_value=r))
+    with pytest.raises(KciDevError, match="without Location"):
+        api._stream_public_get("https://files.kernelci.org/x")
+
+
+def test_stream_public_get_rejects_redirect_to_file_scheme(monkeypatch):
+    monkeypatch.setattr(
+        api.socket, "getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+    )
+    r = Mock(status_code=302, headers={"Location": "file:///etc/passwd"})
+    r.close = Mock()
+    monkeypatch.setattr(api.kcidev_session, "get", Mock(return_value=r))
+    with pytest.raises(KciDevError, match="non-http"):
+        api._stream_public_get("https://files.kernelci.org/x")
+
+
+def test_get_log_stops_at_the_total_deadline(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"X" * 1000 for _ in range(50)])
+    ticks = iter([0.0] + [api.LOG_DEADLINE_SECONDS + 1] * 200)
+    monkeypatch.setattr(api, "monotonic", lambda: next(ticks))
+
+    out = _client().get_log("t", max_bytes=100000)
+
+    assert out["deadline_exceeded"] is True
+    assert out["truncated"] is True
+    assert out["total_bytes"] < 50 * 1000
+
+
+def test_get_log_normal_download_is_not_deadline_limited(monkeypatch):
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, [b"Y" * 100])
+
+    out = _client().get_log("t", max_bytes=100000)
+
+    assert out["deadline_exceeded"] is False
+    assert out["truncated"] is False
+
+
+def test_get_log_deadline_returns_partial_gzip(monkeypatch):
+    import gzip
+
+    raw = bytes(range(256)) * 40
+    payload = gzip.compress(raw)
+    chunks = [payload[i : i + 64] for i in range(0, len(payload), 64)]
+    monkeypatch.setattr(KernelCIClient, "get_test", lambda self, tid: _log_test())
+    _mock_stream(monkeypatch, chunks)
+    ticks = iter([0.0] + [api.LOG_DEADLINE_SECONDS + 1] * 500)
+    monkeypatch.setattr(api, "monotonic", lambda: next(ticks))
+
+    out = _client().get_log("t", max_bytes=100000)
+
+    assert out["deadline_exceeded"] is True
+    assert out["truncated"] is True
