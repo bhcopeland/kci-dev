@@ -222,3 +222,82 @@ def test_trigger_patchset_failure_raises(monkeypatch):
     monkeypatch.setattr(maestro_common.kcidev_session, "post", post)
     with pytest.raises(KciDevError, match="patchset failed"):
         _client().trigger_patchset("0" * 24, patches=["patch content"])
+
+
+def test_get_tree_report_uses_integer_age_defaults(monkeypatch):
+    client = _client()
+    request = Mock(return_value={})
+    monkeypatch.setattr(client, "_dashboard_request", request)
+
+    client.get_tree_report("maestro", "main", "https://example.com/linux.git")
+
+    assert request.call_args.args[-2:] == (24, 0)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "result_id"),
+    [("get_build_issues", "build-id"), ("get_boot_issues", "test-id")],
+)
+def test_get_issues_forwards_error_verbosity(monkeypatch, method_name, result_id):
+    client = _client()
+    request = Mock(return_value=[])
+    monkeypatch.setattr(client, "_dashboard_request", request)
+
+    getattr(client, method_name)(result_id, error_verbose=False)
+
+    assert request.call_args.args[-2:] == (True, False)
+
+
+def test_compare_results_continues_without_tree_history(monkeypatch):
+    client = _client()
+    monkeypatch.setattr(client, "get_builds", Mock(return_value={"builds": []}))
+    monkeypatch.setattr(client, "get_boots", Mock(return_value={"boots": []}))
+    monkeypatch.setattr(client, "get_tests", Mock(return_value={"tests": []}))
+    monkeypatch.setattr(
+        client,
+        "get_tree_report",
+        Mock(side_effect=KciDevError("tree report unavailable")),
+    )
+
+    report = client.compare_results(
+        "base", "head", "https://example.com/linux.git", "main"
+    )
+
+    assert report["incomplete"] is True
+    assert report["items"] == []
+
+
+def test_compare_results_only_fetches_issues_when_requested(monkeypatch):
+    client = _client()
+    passing = {
+        "id": "base-test",
+        "status": "PASS",
+        "path": "suite.case",
+        "environment_misc": {"platform": "qemu"},
+    }
+    failing = {**passing, "id": "head-test", "status": "FAIL"}
+    monkeypatch.setattr(client, "get_builds", Mock(return_value={"builds": []}))
+    monkeypatch.setattr(client, "get_boots", Mock(return_value={"boots": []}))
+    get_tests = Mock(side_effect=[{"tests": [passing]}, {"tests": [failing]}] * 2)
+    monkeypatch.setattr(client, "get_tests", get_tests)
+    monkeypatch.setattr(client, "get_tree_report", Mock(return_value={}))
+    get_issues = Mock(return_value=[{"id": "issue-1"}])
+    monkeypatch.setattr(client, "get_boot_issues", get_issues)
+
+    report = client.compare_results(
+        "base", "head", "https://example.com/linux.git", "main"
+    )
+
+    assert report["items"][0]["known_issues"] == []
+    get_issues.assert_not_called()
+
+    report = client.compare_results(
+        "base",
+        "head",
+        "https://example.com/linux.git",
+        "main",
+        include_issues=True,
+    )
+
+    assert report["items"][0]["known_issues"] == ["issue-1"]
+    get_issues.assert_called_once_with("head-test", error_verbose=False)

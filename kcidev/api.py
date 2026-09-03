@@ -55,6 +55,7 @@ from kcidev.libs.maestro_common import (
     send_jobretry,
     send_patchset,
 )
+from kcidev.libs.regression import RegressionReport
 from kcidev.main import get_cli
 
 
@@ -419,22 +420,22 @@ class KernelCIClient:
             True,
         )
 
-    def get_build_issues(self, build_id):
+    def get_build_issues(self, build_id, error_verbose=True):
         return self._dashboard_request(
             "Dashboard build issues request failed",
             dashboard_fetch_build_issues,
             build_id,
             True,
-            True,
+            error_verbose,
         )
 
-    def get_boot_issues(self, test_id):
+    def get_boot_issues(self, test_id, error_verbose=True):
         return self._dashboard_request(
             "Dashboard boot issues request failed",
             dashboard_fetch_boot_issues,
             test_id,
             True,
-            True,
+            error_verbose,
         )
 
     def get_issue_list(self, origin=None, days=7):
@@ -484,8 +485,8 @@ class KernelCIClient:
         git_url,
         test_path=None,
         history_size=10,
-        max_age_in_hours=None,
-        min_age_in_hours=None,
+        max_age_in_hours=24,
+        min_age_in_hours=0,
     ):
         return self._dashboard_request(
             "Dashboard tree report request failed",
@@ -499,6 +500,68 @@ class KernelCIClient:
             max_age_in_hours,
             min_age_in_hours,
         )
+
+    def compare_results(
+        self, base, head, giturl, branch, origin="maestro", include_issues=False
+    ):
+        """Compare two dashboard checkouts and return a CI-grade report dict.
+
+        Issue lookup is disabled by default because it requires one additional
+        Dashboard request for every regression and persistent failure.
+        """
+
+        def checkout(commit):
+            return {
+                "builds": self.get_builds(origin, giturl, branch, commit).get(
+                    "builds", []
+                ),
+                "boots": self.get_boots(origin, giturl, branch, commit).get(
+                    "boots", []
+                ),
+                "tests": self.get_tests(origin, giturl, branch, commit).get(
+                    "tests", []
+                ),
+            }
+
+        base_results, head_results = checkout(base), checkout(head)
+        # tree-report supplies history-aware unstable/regression decisions.  If
+        # HEAD is not the newest checkout the raw transition remains useful.
+        history_incomplete = False
+        try:
+            history = self.get_tree_report(origin, branch, giturl)
+        except KciDevError:
+            # History improves classification, but is not required to compare
+            # the two explicitly requested checkouts.
+            history = None
+            history_incomplete = True
+        report = RegressionReport.compare(
+            base, head, base_results, head_results, history
+        )
+        report.incomplete = history_incomplete
+        if include_issues:
+            for item in report.items:
+                if item["category"] not in ("regression", "persistent_fail"):
+                    continue
+                result_id = item["head_id"]
+                if not result_id:
+                    continue
+                try:
+                    issues = (
+                        self.get_build_issues(result_id, error_verbose=False)
+                        if item["identity"]["kind"] == "build"
+                        else self.get_boot_issues(result_id, error_verbose=False)
+                    )
+                except KciDevError as exc:
+                    if "no issues" in str(exc).lower():
+                        issues = []
+                    else:
+                        report.incomplete = True
+                        continue
+                item["known_issues"] = [
+                    issue.get("id", issue) if isinstance(issue, dict) else issue
+                    for issue in issues
+                ]
+        return report.to_dict()
 
     def _instance_setting(self, key, *, human_readable_key=None):
         value = ((self.cfg or {}).get(self.instance) or {}).get(key)

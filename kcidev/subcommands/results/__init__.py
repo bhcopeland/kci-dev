@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import json
 import sys
 from functools import wraps
 
@@ -25,6 +26,7 @@ from kcidev.libs.dashboard import (
     dashboard_fetch_tree_report,
 )
 from kcidev.libs.git_repo import get_tree_name, set_giturl_branch_commit
+from kcidev.libs.regression import CATEGORIES
 from kcidev.subcommands.results.hardware import hardware
 from kcidev.subcommands.results.options import (
     builds_and_tests_options,
@@ -384,8 +386,18 @@ def boot(op_id, download_logs, use_json):
     default=True,
 )
 @click.argument("commits", nargs=-1, required=False)
-@results_display_options
-def compare(origin, giturl, branch, latest, commits, use_json):
+@click.option(
+    "--format", "output_format", type=click.Choice(["human", "json"]), default="human"
+)
+@click.option("--json", "use_json", is_flag=True, hidden=True)
+@click.option(
+    "--include-issues",
+    is_flag=True,
+    help="Look up known issues (one request per regression/persistent failure)",
+)
+def compare(
+    origin, giturl, branch, latest, commits, output_format, use_json, include_issues
+):
     """Compare test results between commits with summary and regressions.
 
     Compares test results between commits showing summary statistics
@@ -404,15 +416,94 @@ def compare(origin, giturl, branch, latest, commits, use_json):
       # Compare specific commits
       kci-dev results compare --giturl https://git.kernel.org/... abc123 def456
     """
-    if latest and not commits:
-        # Use latest commits from history
-        cmd_compare(origin, giturl, branch, None, use_json)
-    elif len(commits) == 2:
-        # Use specific commits provided
-        cmd_compare(origin, giturl, branch, list(commits), use_json)
+    from kcidev.api import KciDevError, KernelCIClient
+
+    json_output = use_json or output_format == "json"
+    if len(commits) != 2:
+        raise click.UsageError("exactly BASE and HEAD commits are required")
+    try:
+        report = KernelCIClient().compare_results(
+            commits[0],
+            commits[1],
+            giturl,
+            branch,
+            origin,
+            include_issues=include_issues,
+        )
+    except KciDevError as exc:
+        if json_output:
+            click.echo(json.dumps({"error": str(exc), "incomplete": True}))
+        raise click.exceptions.Exit(2) from exc
+    if json_output:
+        # This is deliberately the only stdout write in JSON mode.
+        click.echo(json.dumps(report, sort_keys=True))
+
     else:
-        click.echo("Error: Provide either --latest flag or exactly 2 commit hashes")
-        raise click.Abort()
+        click.echo(f"Compared {commits[0]} -> {commits[1]}")
+        for category, count in report["counts"].items():
+            click.echo(f"  {category}: {count}")
+    if report["incomplete"]:
+        raise click.exceptions.Exit(2)
+    if report["counts"]["regression"]:
+        raise click.exceptions.Exit(1)
+
+
+@results.command()
+@click.option("--origin", default="maestro", help="Select KCIDB origin")
+@click.option("--giturl", required=True, help="Git repository URL")
+@click.option("--branch", required=True, help="Git branch name")
+@click.option("--base", help="Baseline checkout commit (defaults to previous)")
+@click.option("--head", help="Candidate checkout commit (defaults to latest)")
+@click.option(
+    "--fail-on",
+    default="regression",
+    show_default=True,
+    help="Comma-separated report categories which fail the gate",
+)
+@click.option(
+    "--format", "output_format", type=click.Choice(["human", "json"]), default="human"
+)
+def gate(origin, giturl, branch, base, head, fail_on, output_format):
+    """Gate a checkout using the regression comparison policy."""
+    from kcidev.api import KciDevError, KernelCIClient
+
+    policies = {value.strip() for value in fail_on.split(",") if value.strip()}
+    unknown_policies = policies.difference(CATEGORIES)
+    if unknown_policies:
+        unknown = ", ".join(sorted(unknown_policies))
+        raise click.UsageError(f"unknown --fail-on categories: {unknown}")
+
+    try:
+        client = KernelCIClient()
+        if bool(base) != bool(head):
+            raise click.UsageError("provide both --base and --head, or neither")
+        if not base:
+            giturl, branch, latest = set_giturl_branch_commit(
+                origin, giturl, branch, None, True, None
+            )
+            history = client.get_commits_history(origin, giturl, branch, latest)
+            commits = (
+                history if isinstance(history, list) else history.get("commits", [])
+            )
+            if len(commits) < 2:
+                raise KciDevError("fewer than two checkouts are available")
+            head, base = commits[0]["git_commit_hash"], commits[1]["git_commit_hash"]
+        report = client.compare_results(base, head, giturl, branch, origin)
+    except (KciDevError, click.Abort) as exc:
+        if output_format == "json":
+            click.echo(json.dumps({"error": str(exc), "incomplete": True}))
+        else:
+            click.echo(f"Incomplete comparison: {exc}", err=True)
+        raise click.exceptions.Exit(2) from exc
+    click.echo(
+        json.dumps(report, sort_keys=True)
+        if output_format == "json"
+        else "\n".join(f"{key}: {value}" for key, value in report["counts"].items())
+    )
+    if report["incomplete"]:
+        raise click.exceptions.Exit(2)
+    if any(report["counts"].get(value, 0) for value in policies):
+        raise click.exceptions.Exit(1)
 
 
 def get_issues(ctx, origin, item_type, giturl, branch, commit, tree_name, arch):
