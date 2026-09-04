@@ -7,7 +7,7 @@ from functools import wraps
 from kcidev.api import KciDevError, KernelCIClient
 from kcidev.libs.filters import StatusFilter
 from kcidev.mcp.errors import tool_errors
-from kcidev.mcp.validation import check_page_bounds, checked_status
+from kcidev.mcp.validation import check_page_args, check_page_bounds, checked_status
 
 _active_client = ContextVar("dashboard_tool_client", default=None)
 
@@ -150,6 +150,7 @@ def list_builds(
     fields projects each entry to only those keys.
     Returns build entries with ids usable with get_build.
     """
+    check_page_args(status, limit, offset)
     data = _current_client().get_builds(
         origin, giturl, branch, commit, arch, tree, start_date, end_date
     )
@@ -181,6 +182,7 @@ def list_boots(
     fields projects each entry to only those keys.
     Returns boot entries with ids usable with get_test.
     """
+    check_page_args(status, limit, offset)
     data = _current_client().get_boots(
         origin, giturl, branch, commit, arch, tree, start_date, end_date, boot_origin
     )
@@ -212,6 +214,7 @@ def list_tests(
     each entry to only those keys.
     Returns test entries with ids usable with get_test.
     """
+    check_page_args(status, limit, offset)
     data = _current_client().get_tests(
         origin, giturl, branch, commit, arch, tree, start_date, end_date
     )
@@ -333,6 +336,7 @@ def get_issue_builds(
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.
     """
+    check_page_args(status, limit, offset)
     data = _current_client().get_issue_builds(issue_id, origin)
     return _page(data, "builds", status, limit, offset, fields)
 
@@ -355,6 +359,7 @@ def get_issue_tests(
     limit/offset pagination; the response carries 'total' and 'matched'
     counts; fields projects each entry to only those keys.
     """
+    check_page_args(status, limit, offset)
     data = _current_client().get_issue_tests(issue_id, origin)
     return _page(data, "tests", status, limit, offset, fields)
 

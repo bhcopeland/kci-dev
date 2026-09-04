@@ -30,3 +30,16 @@ def checked_filters(filters):
                 "for example 'state=done'"
             )
     return list(filters or [])
+
+
+def check_page_args(status, limit, offset):
+    """Validate paging arguments before any request is made.
+
+    The tools fetch a whole result set and page it in memory, so
+    validating inside the pager would mean an expensive request for
+    input that was never usable, and a request failure would mask the
+    real complaint.
+    """
+    check_page_bounds(limit, offset)
+    if status:
+        checked_status(status)

@@ -328,3 +328,31 @@ def test_get_issue_rejects_empty_id(monkeypatch):
     with pytest.raises(ToolExecutionError):
         tools_dashboard.get_issue("")
     get.assert_not_called()
+
+
+def test_invalid_status_is_rejected_before_any_request(monkeypatch):
+    get = _mock_get(monkeypatch, {"tests": []})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.list_tests(**_tree_args(status="borked"))
+    get.assert_not_called()
+
+
+def test_invalid_limit_is_rejected_before_any_request(monkeypatch):
+    get = _mock_get(monkeypatch, {"tests": []})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.list_tests(**_tree_args(limit=-1))
+    get.assert_not_called()
+
+
+def test_invalid_offset_is_rejected_before_any_request(monkeypatch):
+    get = _mock_get(monkeypatch, {"builds": []})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.list_builds(**_tree_args(offset=-1))
+    get.assert_not_called()
+
+
+def test_issue_tools_validate_before_any_request(monkeypatch):
+    get = _mock_get(monkeypatch, {"tests": []})
+    with pytest.raises(ToolExecutionError):
+        tools_dashboard.get_issue_tests("maestro:i1", status="borked")
+    get.assert_not_called()
