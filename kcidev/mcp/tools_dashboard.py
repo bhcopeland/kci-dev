@@ -31,10 +31,10 @@ def _page(data, key, status, limit, offset, fields=None, lab=None):
     check_page_bounds(limit, offset)
     items = data[key] if isinstance(data, dict) else data
     total = len(items)
+    candidates = items
     if status:
         status_filter = StatusFilter(checked_status(status))
         items = [item for item in items if status_filter.matches(item)]
-    candidates = items
     if lab:
         wanted = lab.lower()
         items = [item for item in items if wanted in _entry_labs(item)]
@@ -179,8 +179,9 @@ def list_builds(
     paginated with limit/offset; the response carries 'total' (before
     filtering) and 'matched' counts so you know whether to fetch
     further pages, and a lab matching nothing returns 'labs_present',
-    the labs the entries actually report, so a mistyped name shows up
-    without a second call; fields projects each entry to only those
+    every lab the entries report before any status filter, so a mistyped
+    name shows up without a second call and a real lab with no matching
+    status is still listed; fields projects each entry to only those
     keys.
     Returns build entries with ids usable with get_build.
     """
@@ -217,8 +218,9 @@ def list_boots(
     paginated with limit/offset; the response carries 'total' (before
     filtering) and 'matched' counts so you know whether to fetch
     further pages, and a lab matching nothing returns 'labs_present',
-    the labs the entries actually report, so a mistyped name shows up
-    without a second call; fields projects each entry to only those
+    every lab the entries report before any status filter, so a mistyped
+    name shows up without a second call and a real lab with no matching
+    status is still listed; fields projects each entry to only those
     keys.
     Returns boot entries with ids usable with get_test.
     """
@@ -254,8 +256,9 @@ def list_tests(
     thousands of tests, so filter by lab and status and paginate with
     limit/offset; the response carries 'total' (before filtering) and
     'matched' counts so you know whether to fetch further pages, and a
-    lab matching nothing returns 'labs_present', the labs the entries
-    actually report, so a mistyped name shows up without a second call;
+    lab matching nothing returns 'labs_present', every lab the entries
+    report before any status filter, so a mistyped name shows up without
+    a second call and a real lab with no matching status is still listed;
     fields projects each entry to only those keys.
     Returns test entries with ids usable with get_test.
     """
